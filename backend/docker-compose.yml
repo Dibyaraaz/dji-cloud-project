@@ -1,0 +1,86 @@
+services:
+  emqx:
+    image: emqx/emqx:5.0.20
+    container_name: emqx
+    restart: unless-stopped
+    environment:
+      - EMQX_NAME=emqx
+      - EMQX_HOST=emqx
+      - EMQX_ALLOW_ANONYMOUS=true
+      # Dashboard creds
+      - EMQX_DASHBOARD__DEFAULT_USERNAME=${EMQX_DASH_USER:-admin}
+      - EMQX_DASHBOARD__DEFAULT_PASSWORD=${EMQX_DASH_PASS:-public}
+      # Built-in auth backend
+      - EMQX_AUTHENTICATION__1__MECHANISM=password_based
+      - EMQX_AUTHENTICATION__1__BACKEND=built_in_database
+    ports:
+      - "1883:1883"   # MQTT TCP
+      - "8083:8083"   # MQTT WebSocket (optional)
+      - "8883:8883"   # MQTT TLS (optional)
+      - "18083:18083" # EMQX Dashboard
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpass}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-dji_cloud}
+      - MYSQL_USER=${MYSQL_USER:-dji}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-djipass}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: ./backend
+    container_name: cloud-backend
+    restart: unless-stopped
+    volumes:
+      - ./keys:/app/keys:ro
+    environment:
+      - PORT=6789
+      - PUBLIC_BASE_URL=http://${HOST_ADDR:-127.0.0.1}:6789
+      - PILOT2_PUBLIC_KEY_PATH=/app/keys/pilot2_public.pem
+      - MQTT_HOST=emqx
+      - MQTT_PORT=1883
+      - MQTT_USERNAME=${MQTT_USERNAME:-pilot2}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-pilot2pass}
+
+      - DJI_APP_ID=${DJI_APP_ID:-}
+      - DJI_APP_KEY=${DJI_APP_KEY:-}
+      - DJI_LICENSE=${DJI_LICENSE:-}
+
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DB=${MYSQL_DATABASE:-dji_cloud}
+      - MYSQL_USER=${MYSQL_USER:-dji}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-djipass}
+
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+      - WORKSPACE_ID=${WORKSPACE_ID:-}
+    ports:
+      - "6789:6789"
+    depends_on:
+      - emqx
+      - mysql
+      - redis
+
+volumes:
+  emqx_data:
+  emqx_log:
+  mysql_data:

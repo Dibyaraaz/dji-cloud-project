@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DJI Pilot 2 → Cloud (Fixed)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; margin: 8px 0; align-items:flex-end; }
+    .card { border:1px solid #ddd; border-radius:12px; padding:12px; max-width: 1080px; }
+    .badge { display:inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+    .ok { background:#e7f7ec; color:#155724; border:1px solid #cdebd4; }
+    .fail { background:#fde8e8; color:#7f1d1d; border:1px solid #f9caca; }
+    .pending { background:#eef2ff; color:#1e3a8a; border:1px solid #dbeafe; }
+    .warn { background:#fef3c7; color:#92400e; border:1px solid #fde68a; }
+
+    #log {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      background:#0b1020; color:#d6e1ff;
+      border-radius:12px; padding:12px; height: 52vh; overflow:auto;
+      white-space: pre-wrap;
+    }
+    .dim { opacity: 0.75; }
+    button { border:1px solid #ddd; border-radius:10px; padding:10px 12px; background:#fff; cursor:pointer; }
+    button:active { transform: translateY(1px); }
+    input { border:1px solid #ddd; border-radius:10px; padding:10px 12px; width: min(420px, 92vw); }
+    label { font-size: 12px; opacity: 0.8; display:block; margin-bottom: 6px; }
+    code { background:#f6f6f6; padding:2px 6px; border-radius:6px; }
+  </style>
+</head>
+
+<body>
+  <h2>DJI Pilot 2 → Cloud (Fixed with thingConnect)</h2>
+
+  <div class="card">
+    <div class="row">
+      <div><span id="b-bridge"  class="badge pending">bridge: pending</span></div>
+      <div><span id="b-license" class="badge pending">license: pending</span></div>
+      <div><span id="b-thing"   class="badge pending">thing: pending</span></div>
+      <div><span id="b-mqtt"    class="badge pending">mqtt: pending</span></div>
+      <div><span id="b-wsid"    class="badge pending">workspace id: pending</span></div>
+      <div><span id="b-info"    class="badge pending">platform info: pending</span></div>
+    </div>
+
+    <p class="dim">
+      Open inside <b>DJI Pilot 2 → Cloud Service → Other Platforms</b>.<br/>
+      Press <b>Connect</b>. After it connects, go to <b>Flight View</b> for 30–60s.
+    </p>
+
+    <div class="row">
+      <div>
+        <label>MQTT TCP URL</label>
+        <input id="mqttUrl" />
+      </div>
+      <div>
+        <label>MQTT Username</label>
+        <input id="mqttUser" />
+      </div>
+      <div>
+        <label>MQTT Password</label>
+        <input id="mqttPass" type="password" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Platform Name</label>
+        <input id="platformName" />
+      </div>
+      <div>
+        <label>Workspace Name</label>
+        <input id="workspaceName" />
+      </div>
+      <div>
+        <label>Workspace ID</label>
+        <input id="workspaceId" placeholder="Leave empty for auto-generate" />
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="btnConnect">Connect</button>
+      <button id="btnListBridge">List JSBridge Methods</button>
+      <button id="btnClear">Clear Logs</button>
+    </div>
+  </div>
+
+  <h3>Log</h3>
+  <div id="log"></div>
+
+  <!-- Config from backend -->
+  <script src="/pilot-login/config.js"></script>
+
+  <script>
+    // ============================================
+    // GLOBALS - DEFINED FIRST!
+    // ============================================
+    const logEl = document.getElementById("log");
+    const cfg = window.__CFG__ || {};
+
+    // CRITICAL: Define MQTT callbacks GLOBALLY at top level
+    window.onMQTTConnect = null;  // Will be set in connectFlow
+    window.onMQTTDisconnect = null;  // Will be set in connectFlow
+
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+
+    function log(msg, cls) {
+      const t = new Date().toLocaleTimeString();
+      const line = document.createElement("div");
+      line.innerHTML = `<span class="dim">[${t}]</span> <span class="${cls || ""}">${msg}</span>`;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+
+      try {
+        fetch("/api/client-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ t, msg })
+        }).catch(() => {});
+      } catch (e) {}
+    }
+
+    function badge(id, ok, text) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = text;
+      el.className =
+        "badge " +
+        (ok === true ? "ok" :
+         ok === false ? "fail" :
+         ok === "warn" ? "warn" :
+         "pending");
+    }
+
+    function safeParseMaybeJson(x) {
+      if (typeof x !== "string") return x;
+      const s = x.trim();
+      if (!s) return s;
+      try { return JSON.parse(s); } catch (_) { return s; }
+    }
+
+    function hasBridge() {
+      return typeof window !== "undefined"
+        && window.djiBridge
+        && typeof window.djiBridge.platformVerifyLicense === "function";
+    }
+
+    function normalizeMqttUrl(raw) {
+      let mqttUrl = (raw || "").trim();
+      if (!mqttUrl) return mqttUrl;
+
+      if (!mqttUrl.startsWith("tcp://") && !mqttUrl.startsWith("ws://") && !mqttUrl.startsWith("wss://")) {
+        mqttUrl = "tcp://" + mqttUrl;
+      }
+      if (mqttUrl.startsWith("tcp://") && !mqttUrl.match(/:\d+$/)) {
+        mqttUrl = mqttUrl.replace(/^tcp:\/\/([^/]+)$/, "tcp://$1:1883");
+      }
+      return mqttUrl;
+    }
+
+    // ============================================
+    // INITIALIZATION
+    // ============================================
+
+    const hostAddr = (cfg.publicBaseUrl || "")
+      .replace(/^https?:\/\//, "")
+      .replace(/:\d+.*$/, "");
+
+    const defaultMqtt = "tcp://" + (hostAddr || "172.20.10.3") + ":" + ((cfg.mqtt && cfg.mqtt.port) || 1883);
+    const WORKSPACE_ID_FROM_CFG = (cfg.workspace && (cfg.workspace.workspaceId || cfg.workspace.id)) || "";
+
+    document.getElementById("mqttUrl").value  = defaultMqtt;
+    document.getElementById("mqttUser").value = (cfg.mqtt && cfg.mqtt.username) || "";
+    document.getElementById("mqttPass").value = (cfg.mqtt && cfg.mqtt.password) || "";
+    document.getElementById("platformName").value   = (cfg.workspace && cfg.workspace.platformName) || "DJI Cloud Backend";
+    document.getElementById("workspaceName").value  = (cfg.workspace && cfg.workspace.workspaceName) || "Main Workspace";
+    document.getElementById("workspaceId").value    = WORKSPACE_ID_FROM_CFG;
+
+    // ============================================
+    // MQTT CALLBACKS - DEFINED GLOBALLY BEFORE USE
+    // ============================================
+
+    function setupMqttCallbacks(workspaceId, platformName, workspaceName, desc) {
+      // Define onMQTTConnect globally
+      window.onMQTTConnect = function (data) {
+        log("✅ onMQTTConnect: " + JSON.stringify(data), "ok");
+        badge("b-mqtt", true, "mqtt: connected");
+
+        // Set workspace ID (CRITICAL for telemetry)
+        try {
+          if (workspaceId && typeof window.djiBridge.platformSetWorkspaceId === "function") {
+            log("platformSetWorkspaceId(" + workspaceId + ")");
+            const r0 = window.djiBridge.platformSetWorkspaceId(workspaceId);
+            log("platformSetWorkspaceId ret: " + String(r0));
+
+            const p0 = safeParseMaybeJson(String(r0));
+            if (p0 && p0.code !== undefined && p0.code !== 0) {
+              badge("b-wsid", false, "workspace id: fail (" + p0.code + ")");
+            } else {
+              badge("b-wsid", true, "workspace id: set");
+            }
+          } else {
+            badge("b-wsid", "warn", "workspace id: missing");
+            log("⚠️ workspaceId empty or method not available", "warn");
+          }
+        } catch (e) {
+          badge("b-wsid", false, "workspace id: error");
+          log("❌ platformSetWorkspaceId error: " + (e?.message || String(e)), "fail");
+        }
+
+        // Set platform info
+        try {
+          if (typeof window.djiBridge.platformSetInformation === "function") {
+            log("platformSetInformation(" + platformName + ", " + workspaceName + ")");
+            const r = window.djiBridge.platformSetInformation(platformName, workspaceName, desc);
+            log("platformSetInformation ret: " + String(r));
+            badge("b-info", true, "platform info: sent");
+          } else {
+            badge("b-info", "warn", "platform info: no method");
+          }
+        } catch (e) {
+          badge("b-info", false, "platform info: error");
+          log("❌ platformSetInformation error: " + (e?.message || String(e)), "fail");
+        }
+
+        log("✅ Connect flow complete! Go to Flight View for telemetry.", "ok");
+      };
+
+      // Define onMQTTDisconnect globally
+      window.onMQTTDisconnect = function (data) {
+        log("❌ onMQTTDisconnect: " + JSON.stringify(data), "fail");
+        badge("b-mqtt", false, "mqtt: disconnected");
+      };
+
+      log("✅ MQTT callbacks defined globally");
+    }
+
+    // ============================================
+    // CONNECT FLOW (WITH thingConnect ADDED!)
+    // ============================================
+
+    async function connectFlow() {
+      log("🚀 Starting connect flow...");
+
+      if (!hasBridge()) {
+        badge("b-bridge", false, "bridge: missing");
+        log("❌ No DJI JSBridge. Open in DJI Pilot 2 → Cloud Service.", "fail");
+        return;
+      }
+
+      const { appId, appKey, license } = (cfg.dji || {});
+      if (!appId || !appKey || !license) {
+        badge("b-license", false, "license: missing");
+        log("❌ Missing DJI credentials in backend config", "fail");
+        return;
+      }
+
+      let mqttUrl = normalizeMqttUrl(document.getElementById("mqttUrl").value);
+      document.getElementById("mqttUrl").value = mqttUrl;
+
+      const mqttUser = document.getElementById("mqttUser").value.trim();
+      const mqttPass = document.getElementById("mqttPass").value.trim();
+      const platformName  = document.getElementById("platformName").value.trim() || "DJI Cloud Backend";
+      const workspaceName = document.getElementById("workspaceName").value.trim() || "Main Workspace";
+      const workspaceId   = document.getElementById("workspaceId").value.trim();
+      const desc = "Telemetry & Control System";
+
+      badge("b-bridge", true, "bridge: ok");
+      badge("b-license", null, "license: verifying...");
+
+      // 1) Verify license
+      try {
+        log("1) platformVerifyLicense()");
+        const ret = window.djiBridge.platformVerifyLicense(appId, appKey, license);
+        log("platformVerifyLicense ret: " + String(ret));
+
+        const parsed = safeParseMaybeJson(String(ret));
+        if (parsed && parsed.code !== undefined && parsed.code !== 0) {
+          badge("b-license", false, "license: fail (" + parsed.code + ")");
+          log("❌ License failed: " + JSON.stringify(parsed), "fail");
+          return;
+        }
+        badge("b-license", true, "license: ok");
+      } catch (e) {
+        badge("b-license", false, "license: error");
+        log("❌ License error: " + (e?.message || String(e)), "fail");
+        return;
+      }
+
+      // 2) Setup MQTT callbacks BEFORE loading component
+      setupMqttCallbacks(workspaceId, platformName, workspaceName, desc);
+
+      // 3) Load thing component
+      try {
+        badge("b-thing", null, "thing: loading...");
+        badge("b-mqtt", null, "mqtt: connecting...");
+
+        log("2) platformLoadComponent('thing')");
+        const thingConfig = {
+          host: mqttUrl,
+          username: mqttUser,
+          password: mqttPass,
+          connectCallback: "onMQTTConnect",
+          disconnectCallback: "onMQTTDisconnect"
+        };
+        log("Thing config: " + JSON.stringify(thingConfig));
+
+        const ret = window.djiBridge.platformLoadComponent("thing", JSON.stringify(thingConfig));
+        log("platformLoadComponent ret: " + String(ret));
+
+        const parsed = safeParseMaybeJson(String(ret));
+        if (parsed && parsed.code !== undefined && parsed.code !== 0 && parsed.code !== 313005) {
+          badge("b-thing", false, "thing: fail (" + parsed.code + ")");
+          log("❌ platformLoadComponent failed: " + JSON.stringify(parsed), "fail");
+          return;
+        }
+
+        badge("b-thing", true, "thing: ok");
+
+        // ============================================
+        // NEW: EXPLICIT thingConnect() CALL
+        // (From minimal DJI Cloud API example)
+        // ============================================
+        try {
+          if (typeof window.djiBridge.thingConnect === "function") {
+            log("3) thingConnect() - Explicitly initiating MQTT connection");
+            const connectRet = window.djiBridge.thingConnect(mqttUser, mqttPass, "onMQTTConnect");
+            log("thingConnect ret: " + String(connectRet));
+            
+            // Check connection state
+            if (typeof window.djiBridge.thingGetConnectState === "function") {
+              const state = window.djiBridge.thingGetConnectState();
+              log("Thing connect state: " + state);
+              
+              if (state === 1 || state === "1" || state === "connected") {
+                log("✅ MQTT connection established via thingConnect!", "ok");
+              } else {
+                log("⚠️ Connection state: " + state + " (waiting for callback...)", "warn");
+              }
+            }
+          } else {
+            log("⚠️ thingConnect method not available (may use auto-connect)", "warn");
+          }
+        } catch (e) {
+          log("⚠️ thingConnect error: " + (e?.message || String(e)), "warn");
+        }
+        // ============================================
+        // END OF NEW CODE
+        // ============================================
+
+        log("⏳ Waiting for MQTT connection callback...");
+      } catch (e) {
+        badge("b-thing", false, "thing: error");
+        log("❌ platformLoadComponent error: " + (e?.message || String(e)), "fail");
+      }
+    }
+
+    // ============================================
+    // UI HANDLERS
+    // ============================================
+
+    function listBridgeMethods() {
+      if (!hasBridge()) {
+        badge("b-bridge", false, "bridge: missing");
+        log("❌ No JSBridge", "fail");
+        return;
+      }
+      try {
+        const keys = Object.keys(window.djiBridge || {}).sort();
+        badge("b-bridge", true, "bridge: ok (" + keys.length + ")");
+        log("djiBridge methods (" + keys.length + "):\n" + keys.join(", "));
+      } catch (e) {
+        badge("b-bridge", "warn", "bridge: error");
+        log("⚠️ Could not list keys: " + (e?.message || String(e)), "warn");
+      }
+    }
+
+    document.getElementById("btnConnect").onclick = connectFlow;
+    document.getElementById("btnListBridge").onclick = listBridgeMethods;
+    document.getElementById("btnClear").onclick = () => (logEl.innerHTML = "");
+
+    // Initial check
+    log("Page loaded. JSBridge present? " + (hasBridge() ? "✅ YES" : "❌ NO"));
+    if (hasBridge()) {
+      badge("b-bridge", true, "bridge: ok");
+      listBridgeMethods();
+    } else {
+      badge("b-bridge", false, "bridge: missing");
+      log("⚠️ Open in DJI Pilot 2 → Cloud Service → Other Platforms", "warn");
+    }
+  </script>
+</body>
+</html>

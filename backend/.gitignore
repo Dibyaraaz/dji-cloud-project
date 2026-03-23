@@ -1,0 +1,14 @@
+# Node modules
+node_modules/
+npm-debug.log
+
+# Environment variables (Never upload passwords!)
+.env
+
+# Docker volumes and databases
+mysql-data/
+emqx-data/
+keys/
+
+# Mac system files
+.DS_Store

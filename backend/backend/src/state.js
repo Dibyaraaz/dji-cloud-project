@@ -1,0 +1,202 @@
+// backend/src/state.js
+const db = require('./database');
+const ws = require('./websocket');
+
+// In-memory store (for quick access)
+const devices = {};
+
+/**
+ * Update telemetry data for a device
+ */
+async function updateTelemetry(deviceSn, telemetryData) {
+  if (!deviceSn) {
+    console.warn('[state] updateTelemetry: deviceSn is required');
+    return;
+  }
+
+  const now = new Date().toISOString();
+
+  if (!devices[deviceSn]) {
+    // First time seeing this device
+    devices[deviceSn] = {
+      sn: deviceSn,
+      type: detectDeviceType(deviceSn),
+      firstSeen: now,
+      lastUpdate: now,
+      telemetry: {},
+      metadata: {}
+    };
+    console.log(`[state] New device registered: ${deviceSn}`);
+    
+    // Save to database
+    await db.saveDevice({
+      sn: devices[deviceSn].sn,
+      type: devices[deviceSn].type,
+      model: devices[deviceSn].metadata?.model || null,
+      firmware: devices[deviceSn].metadata?.firmware || null,
+      metadata: devices[deviceSn].metadata
+    });
+  }
+
+  // Update in-memory telemetry
+  devices[deviceSn].telemetry = {
+    ...devices[deviceSn].telemetry,
+    ...telemetryData,
+    timestamp: telemetryData.timestamp || now
+  };
+  devices[deviceSn].lastUpdate = now;
+
+  console.log(`[state] Telemetry updated for ${deviceSn}:`, JSON.stringify(telemetryData));
+
+  // Save to MySQL database
+  await db.saveTelemetry(deviceSn, devices[deviceSn].telemetry);
+
+  // Broadcast via WebSocket to all connected clients
+  ws.broadcastTelemetry(deviceSn, devices[deviceSn].telemetry);
+}
+
+/**
+ * Update device metadata
+ */
+async function updateDeviceMetadata(deviceSn, metadata) {
+  if (!deviceSn) return;
+
+  if (!devices[deviceSn]) {
+    const now = new Date().toISOString();
+    devices[deviceSn] = {
+      sn: deviceSn,
+      type: detectDeviceType(deviceSn),
+      firstSeen: now,
+      lastUpdate: now,
+      telemetry: {},
+      metadata: {}
+    };
+  }
+
+  devices[deviceSn].metadata = {
+    ...devices[deviceSn].metadata,
+    ...metadata
+  };
+
+  console.log(`[state] Metadata updated for ${deviceSn}:`, JSON.stringify(metadata));
+
+  // Save to database
+  await db.saveDevice({
+    sn: deviceSn,
+    type: devices[deviceSn].type,
+    model: metadata.model || null,
+    firmware: metadata.firmware || null,
+    metadata: devices[deviceSn].metadata
+  });
+}
+
+/**
+ * Get telemetry for a specific device
+ */
+function getTelemetry(deviceSn) {
+  return devices[deviceSn] || null;
+}
+
+/**
+ * Get all devices
+ */
+function getAllDevices() {
+  return devices;
+}
+
+/**
+ * Get latest telemetry for all devices
+ */
+function getLatestTelemetry() {
+  const result = {};
+  
+  for (const sn in devices) {
+    result[sn] = {
+      sn: devices[sn].sn,
+      type: devices[sn].type,
+      telemetry: devices[sn].telemetry,
+      lastUpdate: devices[sn].lastUpdate
+    };
+  }
+  
+  return result;
+}
+
+/**
+ * Check if device was updated recently (within last 30 seconds)
+ */
+function isDeviceOnline(deviceSn) {
+  const device = devices[deviceSn];
+  if (!device || !device.lastUpdate) return false;
+
+  const lastUpdate = new Date(device.lastUpdate);
+  const now = new Date();
+  const diffSeconds = (now - lastUpdate) / 1000;
+
+  return diffSeconds < 30;
+}
+
+/**
+ * Detect device type from serial number pattern
+ */
+function detectDeviceType(sn) {
+  if (!sn) return "unknown";
+  
+  if (sn.startsWith("5Y") || sn.startsWith("1ZN")) {
+    return "rc";
+  }
+  
+  if (sn.startsWith("1") || sn.startsWith("4")) {
+    return "aircraft";
+  }
+  
+  return "unknown";
+}
+
+/**
+ * Get device count
+ */
+function getDeviceCount() {
+  return Object.keys(devices).length;
+}
+
+/**
+ * Get statistics
+ */
+function getStats() {
+  const allDevices = Object.values(devices);
+  const onlineDevices = allDevices.filter(d => isDeviceOnline(d.sn));
+
+  return {
+    totalDevices: allDevices.length,
+    onlineDevices: onlineDevices.length,
+    offlineDevices: allDevices.length - onlineDevices.length,
+    deviceTypes: {
+      aircraft: allDevices.filter(d => d.type === "aircraft").length,
+      rc: allDevices.filter(d => d.type === "rc").length,
+      unknown: allDevices.filter(d => d.type === "unknown").length
+    }
+  };
+}
+
+/**
+ * Clear all data (for testing)
+ */
+function clearAll() {
+  for (const key in devices) {
+    delete devices[key];
+  }
+  console.log('[state] All devices cleared');
+}
+
+module.exports = {
+  updateTelemetry,
+  updateDeviceMetadata,
+  getTelemetry,
+  getAllDevices,
+  getLatestTelemetry,
+  isDeviceOnline,
+  getDeviceCount,
+  getStats,
+  clearAll
+};

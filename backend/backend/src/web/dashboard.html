@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DJI Drone Monitor - Simple Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #667eea;
+            font-size: 28px;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.online { background: #10b981; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #667eea;
+            margin: 10px 0;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            height: 400px;
+        }
+
+        .chart-title {
+            color: #667eea;
+            font-size: 18px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+
+        .telemetry-list {
+            max-height: 400px;
+            overflow-y: auto;
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .telemetry-item {
+            padding: 12px;
+            margin-bottom: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .error {
+            background: #fee2e2;
+            color: #991b1b;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Drone Monitor</h1>
+        <div class="status">
+            <div class="status-dot online"></div>
+            <span id="updateTime">Loading...</span>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <div class="stat-label">Altitude</div>
+            <div class="stat-value" id="altitude">--</div>
+        </div>
+
+        <div class="card">
+            <div class="stat-label">Battery</div>
+            <div class="stat-value" id="battery">--</div>
+        </div>
+
+        <div class="card">
+            <div class="stat-label">Speed</div>
+            <div class="stat-value" id="speed">--</div>
+        </div>
+
+        <div class="card">
+            <div class="stat-label">Satellites</div>
+            <div class="stat-value" id="satellites">--</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="chart-container">
+            <h3 class="chart-title">Battery Level</h3>
+            <canvas id="batteryChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <h3 class="chart-title">Altitude</h3>
+            <canvas id="altitudeChart"></canvas>
+        </div>
+    </div>
+
+    <div class="telemetry-list">
+        <h3 class="chart-title">Recent Telemetry</h3>
+        <div id="telemetryList">Loading...</div>
+    </div>
+
+    <script>
+        const DRONE_SN = '1581F5FHC253Q00EZB6J';
+        const WS_URL = 'ws://localhost:6789/ws';
+        
+        let batteryChart, altitudeChart;
+        let batteryData = [];
+        let altitudeData = [];
+        let labels = [];
+        let ws;
+
+        // Initialize charts
+        function initCharts() {
+            const chartOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { beginAtZero: true },
+                    x: { display: false }
+                }
+            };
+
+            batteryChart = new Chart(document.getElementById('batteryChart'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        data: [],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: { ...chartOptions, scales: { ...chartOptions.scales, y: { ...chartOptions.scales.y, max: 100 } } }
+            });
+
+            altitudeChart = new Chart(document.getElementById('altitudeChart'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        data: [],
+                        borderColor: '#667eea',
+                        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: chartOptions
+            });
+        }
+
+        // Connect to WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket(WS_URL);
+            
+            ws.onopen = () => {
+                console.log('[WebSocket] Connected securely');
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    
+                    // Unwrap the payload coming from the Node.js backend
+                    const telemetryData = message.data ? message.data : message;
+                    
+                    // Only update if the SN matches (or if no SN is provided in the wrapper)
+                    if (message.deviceSn === DRONE_SN || !message.deviceSn) {
+                        updateDashboard(telemetryData);
+                    }
+                } catch (e) {
+                    console.error('[WebSocket] Error parsing message:', e);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('[WebSocket] Connection error:', error);
+            };
+            
+            ws.onclose = () => {
+                console.log('[WebSocket] Disconnected. Reconnecting in 3 seconds...');
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
+        // Update dashboard with new data
+        function updateDashboard(data) {
+            // Update stats
+            document.getElementById('altitude').textContent = `${(data.altitude || 0).toFixed(1)}m`;
+            document.getElementById('battery').textContent = `${data.battery || 0}%`;
+            document.getElementById('speed').textContent = `${(data.speed || 0).toFixed(1)}m/s`;
+            document.getElementById('satellites').textContent = data.satellites || 0;
+            document.getElementById('updateTime').textContent = `Updated: ${new Date().toLocaleTimeString()}`;
+
+            // Add to chart data (keep last 20 points)
+            const time = new Date().toLocaleTimeString();
+            
+            if (batteryData.length >= 20) {
+                batteryData.shift();
+                altitudeData.shift();
+                labels.shift();
+            }
+            
+            batteryData.push(data.battery || 0);
+            altitudeData.push(data.altitude || 0);
+            labels.push(time);
+
+            // Update charts
+            batteryChart.data.labels = labels;
+            batteryChart.data.datasets[0].data = batteryData;
+            batteryChart.update('none');
+
+            altitudeChart.data.labels = labels;
+            altitudeChart.data.datasets[0].data = altitudeData;
+            altitudeChart.update('none');
+
+            // Update telemetry list
+            const listHtml = `
+                <div class="telemetry-item">
+                    <strong>${time}</strong><br>
+                    Alt: ${(data.altitude || 0).toFixed(1)}m | 
+                    Batt: ${data.battery || 0}% | 
+                    Speed: ${(data.speed || 0).toFixed(1)}m/s | 
+                    GPS: ${(data.latitude || 0).toFixed(6)}, ${(data.longitude || 0).toFixed(6)}
+                </div>
+            `;
+            
+            const telemetryList = document.getElementById('telemetryList');
+            telemetryList.innerHTML = listHtml + telemetryList.innerHTML;
+            
+            // Keep only last 10 items
+            const items = telemetryList.getElementsByClassName('telemetry-item');
+            while (items.length > 10) {
+                items[items.length - 1].remove();
+            }
+        }
+
+        // Initialize
+        window.addEventListener('load', () => {
+            initCharts();
+            connectWebSocket();
+        });
+    </script>
+</body>
+</html>
