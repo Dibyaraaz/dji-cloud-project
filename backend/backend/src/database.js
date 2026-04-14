@@ -16,7 +16,7 @@ async function initDatabase() {
         password: process.env.MYSQL_ROOT_PASSWORD || 'rootpass',
         database: process.env.MYSQL_DATABASE || 'dji_cloud',
         waitForConnections: true,
-        connectionLimit: 10,
+        connectionLimit: 10, 
         queueLimit: 0
       });
 

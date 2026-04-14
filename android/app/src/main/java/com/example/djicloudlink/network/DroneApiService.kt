@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit
 
 // Server Configuration
 object ServerConfig {
-    const val SERVER_IP = "172.20.10.3"  // YOUR MAC IP
+    const val SERVER_IP = "172.20.10.2"  // YOUR MAC IP
     const val PORT = "6789"
     const val BASE_URL = "http://$SERVER_IP:$PORT/"
     const val WS_URL = "ws://$SERVER_IP:$PORT/ws"

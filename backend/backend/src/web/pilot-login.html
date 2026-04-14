@@ -168,7 +168,7 @@
       .replace(/^https?:\/\//, "")
       .replace(/:\d+.*$/, "");
 
-    const defaultMqtt = "tcp://" + (hostAddr || "172.20.10.3") + ":" + ((cfg.mqtt && cfg.mqtt.port) || 1883);
+    const defaultMqtt = "tcp://" + (hostAddr || "172.20.10.2") + ":" + ((cfg.mqtt && cfg.mqtt.port) || 1883);
     const WORKSPACE_ID_FROM_CFG = (cfg.workspace && (cfg.workspace.workspaceId || cfg.workspace.id)) || "";
 
     document.getElementById("mqttUrl").value  = defaultMqtt;

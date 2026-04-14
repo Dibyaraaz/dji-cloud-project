@@ -84,3 +84,5 @@ volumes:
   emqx_data:
   emqx_log:
   mysql_data:
+    external: true
+    name: dji-cloudapi-backend_mysql_data
